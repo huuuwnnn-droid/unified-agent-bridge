@@ -9,6 +9,25 @@ WORKDIR=${4:-.}
 EXTRA_ARGS=${5:-""}
 
 # --- Helpers ---
+run_with_timeout() {
+  local secs="$1"; shift
+  if command -v timeout &>/dev/null; then
+    timeout "$secs" "$@"
+  elif command -v gtimeout &>/dev/null; then
+    gtimeout "$secs" "$@"
+  else
+    "$@" &
+    local pid=$!
+    ( sleep "$secs" && kill "$pid" 2>/dev/null ) &
+    local watcher=$!
+    wait "$pid" 2>/dev/null
+    local rc=$?
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    return $rc
+  fi
+}
+
 log_debug() {
   printf '[openclaw] %s\n' "$*" >&2
 }
@@ -125,7 +144,7 @@ STDERR_FILE=$(mktemp)
 EXIT_CODE=0
 set +e
 if [[ $USE_HTTP -eq 0 ]]; then
-  timeout 300 "${CMD[@]}" >"$STDOUT_FILE" 2>"$STDERR_FILE"
+  run_with_timeout 300 "${CMD[@]}" >"$STDOUT_FILE" 2>"$STDERR_FILE"
   EXIT_CODE=$?
 else
   if command -v curl >/dev/null 2>&1; then
@@ -142,7 +161,7 @@ if model:
 print(json.dumps(payload, ensure_ascii=False))
 PY
 )
-    timeout 300 curl -sS -X POST http://localhost:18789 -H 'Content-Type: application/json' -d "$REQUEST_BODY" >"$STDOUT_FILE" 2>"$STDERR_FILE"
+    run_with_timeout 300 curl -sS -X POST http://localhost:18789 -H 'Content-Type: application/json' -d "$REQUEST_BODY" >"$STDOUT_FILE" 2>"$STDERR_FILE"
     EXIT_CODE=$?
   else
     EXIT_CODE=127
