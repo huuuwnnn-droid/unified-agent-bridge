@@ -1,0 +1,83 @@
+name: unified-agent-bridge
+description: Cross-tool AI orchestration bridge
+version: "1.0.0"
+author: huhu
+env:
+  BRIDGE_HOME: ${UNIFIED_BRIDGE_HOME:-$HOME/.local/share/unified-agent-bridge}
+usage: |
+  Unified agent bridge for OpenClaw.
+
+  Default bridge root:
+    BRIDGE_HOME="${UNIFIED_BRIDGE_HOME:-$HOME/.local/share/unified-agent-bridge}"
+
+  Expected structure:
+    ${BRIDGE_HOME}/scripts/
+    ${BRIDGE_HOME}/adapters/
+    ${BRIDGE_HOME}/skills/
+    ${BRIDGE_HOME}/config.json
+
+  Dispatch modes:
+    - execute: full read/write access
+    - reason: read-only reasoning
+    - review: code review mode
+    - readonly: strict read-only
+
+  Auto-failover order:
+    opencode -> claude-code -> codex -> openclaw
+
+  Rules:
+    - Always run detect before dispatch.
+    - Prefer bridge.py dispatch over direct CLI calls.
+    - Use context-transfer.py for handoff.
+    - Review tool output before accepting changes.
+commands:
+  detect:
+    description: Detect available AI tools
+    command: bash ${BRIDGE_HOME}/scripts/detect.sh
+  dispatch:
+    description: Dispatch task to another tool
+    command: python3 ${BRIDGE_HOME}/scripts/bridge.py dispatch
+    args:
+      - name: task
+        required: true
+        description: Task to send to another tool
+      - name: mode
+        required: false
+        default: execute
+        description: execute, reason, review, or readonly
+      - name: tool
+        required: false
+        description: Preferred target tool
+  chain:
+    description: Execute a multi-step workflow file
+    command: python3 ${BRIDGE_HOME}/scripts/bridge.py chain
+    args:
+      - name: file
+        required: true
+        description: Workflow definition file
+      - name: workdir
+        required: false
+        description: Working directory for the workflow
+  handoff:
+    description: Transfer context between tools
+    command: python3 ${BRIDGE_HOME}/scripts/context-transfer.py handoff
+    args:
+      - name: from
+        required: true
+        description: Source tool name
+      - name: to
+        required: true
+        description: Target tool name
+      - name: workdir
+        required: false
+        default: .
+        description: Working directory for context collection
+  quota-status:
+    description: Show quota and availability status
+    command: python3 ${BRIDGE_HOME}/scripts/quota-monitor.py status
+  quota-suggest:
+    description: Suggest the next best tool based on quota
+    command: python3 ${BRIDGE_HOME}/scripts/quota-monitor.py suggest
+  report:
+    description: Generate a markdown summary report
+    command: python3 ${BRIDGE_HOME}/scripts/summary-collector.py report --format markdown

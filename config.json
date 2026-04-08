@@ -1,0 +1,72 @@
+{
+  "dispatch_policy": "manual",
+  "confirm_before_dispatch": true,
+  "preferred_tools": ["opencode", "claude-code", "codex", "openclaw"],
+  "auto_handoff_on_rate_limit": true,
+  "tools": {
+    "claude-code": {
+      "command": "claude",
+      "pipe_flags": ["-p"],
+      "output_format_flag": "--output-format json",
+      "permission_flag": "--permission-mode acceptEdits",
+      "readonly_flag": "--allowedTools \"Read,Grep,Glob\"",
+      "model_flag": "--model",
+      "default_model": "opus",
+      "max_turns_flag": "--max-turns",
+      "resume_flag": "--resume",
+      "session_dir": "~/.claude/projects/",
+      "capabilities": ["reasoning", "file_rw", "mcp", "cost_tracking"],
+      "rate_limit_codes": [429, 529]
+    },
+    "codex": {
+      "command": "codex",
+      "pipe_flags": ["exec"],
+      "output_format_flag": "--json",
+      "permission_flag": "--full-auto",
+      "sandbox_flag": "--sandbox workspace-write",
+      "readonly_flag": "--sandbox read-only",
+      "model_flag": "-m",
+      "default_model": "gpt-4.1",
+      "ephemeral_flag": "--ephemeral",
+      "session_dir": "~/.codex/sessions/",
+      "capabilities": ["reasoning", "file_rw", "sandbox", "ephemeral"],
+      "rate_limit_codes": [429, 503]
+    },
+    "opencode": {
+      "command": "opencode",
+      "pipe_flags": ["run"],
+      "output_format_flag": "--format json",
+      "model_flag": "-m",
+      "default_model": "anthropic/claude-opus-4-6",
+      "continue_flag": "-c",
+      "session_dir": "~/.local/share/opencode/sessions/",
+      "serve_command": "serve --port 4096",
+      "capabilities": ["reasoning", "file_rw", "mcp", "plugins", "skills", "http_api"],
+      "rate_limit_codes": [429, 503]
+    },
+    "openclaw": {
+      "command": "openclaw",
+      "pipe_flags": ["agent", "--message"],
+      "thinking_flag": "--thinking high",
+      "gateway_command": "gateway --port 18789",
+      "session_command": "sessions",
+      "capabilities": ["reasoning", "gateway", "multi_agent_routing", "http_api"],
+      "rate_limit_codes": [429, 503]
+    }
+  },
+  "context_transfer": {
+    "max_summary_tokens": 4000,
+    "include_todo_state": true,
+    "include_files_changed": true,
+    "include_recent_messages": 5,
+    "include_key_decisions": true,
+    "compress_tool_outputs": true
+  },
+  "summary": {
+    "auto_generate": true,
+    "include_token_usage": true,
+    "include_duration": true,
+    "include_tool_chain": true,
+    "include_key_decisions": true
+  }
+}
