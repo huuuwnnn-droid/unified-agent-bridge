@@ -52,6 +52,30 @@ BRIDGE_HOME="${UNIFIED_BRIDGE_HOME:-$HOME/.local/share/unified-agent-bridge}"
 python3 "${BRIDGE_HOME}/scripts/bridge.py" chain --file tasks.json --workdir /project/path
 ```
 
+### List Sessions from Another Tool
+
+```bash
+BRIDGE_HOME="${UNIFIED_BRIDGE_HOME:-$HOME/.local/share/unified-agent-bridge}"
+# List recent sessions (default limit: 20)
+python3 "${BRIDGE_HOME}/scripts/context-transfer.py" list --tool claude-code
+python3 "${BRIDGE_HOME}/scripts/context-transfer.py" list --tool codex --limit 10
+python3 "${BRIDGE_HOME}/scripts/context-transfer.py" list --tool opencode
+python3 "${BRIDGE_HOME}/scripts/context-transfer.py" list --tool openclaw
+```
+
+Output is a JSON object with `sessions` array. Each entry has: `session_id`, `timestamp`, `preview` (first user message), `source` (file path), `size_bytes`.
+
+### Export a Specific Session
+
+```bash
+BRIDGE_HOME="${UNIFIED_BRIDGE_HOME:-$HOME/.local/share/unified-agent-bridge}"
+# Export latest session (default)
+python3 "${BRIDGE_HOME}/scripts/context-transfer.py" export --tool claude-code
+# Export a specific session by ID
+python3 "${BRIDGE_HOME}/scripts/context-transfer.py" export --tool claude-code --session ses_xxxxx
+python3 "${BRIDGE_HOME}/scripts/context-transfer.py" export --tool codex --session rollout-2026-04-03T13-45-11-xxxxx
+```
+
 ### Context Handoff (when rate limited or switching tools)
 
 ```bash
@@ -92,6 +116,8 @@ When a tool hits rate limit, `bridge.py` automatically tries the next available 
 - When a task is better suited for a specific tool's strengths
 - When orchestrating a complex workflow across multiple tools
 - When you need to hand off context from one session to another
+- When the user asks to list or browse sessions from another tool (claude-code, codex, opencode, openclaw)
+- When the user wants to pick up work from a specific session in another tool
 
 ## Important Rules
 

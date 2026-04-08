@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+from datetime import datetime, timezone
 import json
 import subprocess
 import sys
@@ -102,11 +103,102 @@ class ContextTransfer:
             return None
         return max(candidates, key=lambda path: path.stat().st_mtime)
 
+    def _isoformat_timestamp(self, timestamp: float) -> str:
+        return datetime.fromtimestamp(timestamp, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    def _collect_session_files(self, search_dirs: List[Path]) -> List[Path]:
+        candidates: List[Path] = []
+        for search_dir in search_dirs:
+            if not search_dir.exists():
+                continue
+            for pattern in ("**/*.jsonl", "**/*.json"):
+                candidates.extend(path for path in search_dir.glob(pattern) if path.is_file())
+
+        seen = set()
+        unique: List[Path] = []
+        for path in candidates:
+            resolved = str(path.resolve())
+            if resolved not in seen:
+                seen.add(resolved)
+                unique.append(path)
+        unique.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        return unique
+
     def _safe_json_loads(self, raw: str) -> Optional[Any]:
         try:
             return json.loads(raw)
         except Exception:
             return None
+
+    def _load_claude_history(self) -> Dict[str, Dict[str, Any]]:
+        history_file = Path("~/.claude/history.jsonl").expanduser()
+        if not history_file.exists():
+            return {}
+        index: Dict[str, Dict[str, Any]] = {}
+        for line in history_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parsed = self._safe_json_loads(line)
+            if isinstance(parsed, dict) and parsed.get("sessionId"):
+                index[str(parsed["sessionId"])] = parsed
+        return index
+
+    def _extract_first_user_message(self, session_file: Path) -> str:
+        try:
+            with session_file.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parsed = self._safe_json_loads(line)
+                    if not isinstance(parsed, dict):
+                        continue
+                    msg_type = str(parsed.get("type") or parsed.get("role") or "").lower()
+                    if msg_type not in ("user", "human"):
+                        continue
+                    content = parsed.get("content") or parsed.get("text") or parsed.get("message") or parsed.get("display") or ""
+                    if isinstance(content, list):
+                        texts: List[str] = []
+                        for item in content:
+                            if isinstance(item, dict):
+                                text = item.get("text") or item.get("content") or ""
+                                if text:
+                                    texts.append(str(text))
+                            elif isinstance(item, str):
+                                texts.append(item)
+                        content = " ".join(texts)
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()[:120]
+        except Exception:
+            return ""
+        return ""
+
+    def _session_search_dirs(self, tool: str) -> List[Path]:
+        tool_cfg = self._tool_config(tool)
+        search_dirs: List[Path] = []
+        session_dir_raw = tool_cfg.get("session_dir", "")
+        if session_dir_raw:
+            search_dirs.append(Path(session_dir_raw).expanduser())
+        if tool == "claude-code":
+            transcripts_dir = Path("~/.claude/transcripts").expanduser()
+            if transcripts_dir not in search_dirs:
+                search_dirs.append(transcripts_dir)
+        return search_dirs
+
+    def _find_session_file(self, tool: str, session_id: str) -> Optional[Path]:
+        for search_dir in self._session_search_dirs(tool):
+            if not search_dir.exists():
+                continue
+            for ext in (".jsonl", ".json"):
+                candidate = search_dir / (session_id + ext)
+                if candidate.is_file():
+                    return candidate
+            for pattern in ("**/{0}.jsonl".format(session_id), "**/{0}.json".format(session_id), "**/*{0}*".format(session_id)):
+                for match in search_dir.glob(pattern):
+                    if match.is_file():
+                        return match
+        return None
 
     def _normalize_message(self, entry: Any) -> List[Dict[str, Any]]:
         if isinstance(entry, dict):
@@ -240,19 +332,129 @@ class ContextTransfer:
         )
         return asdict(context)
 
-    def _export_file_backed_context(self, tool: str) -> Dict[str, Any]:
-        tool_cfg = self._tool_config(tool)
-        session_dir = Path(tool_cfg.get("session_dir", "")).expanduser()
-        session_file = self._latest_session_file(session_dir)
+    def _list_file_backed_sessions(self, tool: str, limit: int) -> Dict[str, Any]:
+        unique = self._collect_session_files(self._session_search_dirs(tool))
+        history_index = self._load_claude_history() if tool == "claude-code" else {}
+        sessions: List[Dict[str, Any]] = []
+        for path in unique[:limit]:
+            stat = path.stat()
+            session_id = path.stem
+            entry: Dict[str, Any] = {
+                "session_id": session_id,
+                "timestamp": self._isoformat_timestamp(stat.st_mtime),
+                "preview": self._extract_first_user_message(path),
+                "source": str(path),
+                "size_bytes": stat.st_size,
+            }
+            history_entry = history_index.get(session_id)
+            if history_entry:
+                project = history_entry.get("project")
+                if project:
+                    entry["project"] = str(project)
+                if not entry["preview"] and history_entry.get("display"):
+                    entry["preview"] = str(history_entry["display"])[:120]
+            sessions.append(entry)
+        return {"tool": tool, "sessions": sessions, "total": len(unique)}
+
+    def _list_file_backed_sessions_generic(self, tool: str, session_dir: str, limit: int) -> Dict[str, Any]:
+        unique = self._collect_session_files([Path(session_dir).expanduser()])
+        sessions: List[Dict[str, Any]] = []
+        for path in unique[:limit]:
+            stat = path.stat()
+            sessions.append(
+                {
+                    "session_id": path.stem,
+                    "timestamp": self._isoformat_timestamp(stat.st_mtime),
+                    "preview": self._extract_first_user_message(path),
+                    "source": str(path),
+                    "size_bytes": stat.st_size,
+                }
+            )
+        return {"tool": tool, "sessions": sessions, "total": len(unique)}
+
+    def _parse_command_session_items(self, tool: str, items: List[Any], limit: int) -> Dict[str, Any]:
+        sessions: List[Dict[str, Any]] = []
+        for item in items[:limit]:
+            if not isinstance(item, dict):
+                continue
+            sessions.append(
+                {
+                    "session_id": str(item.get("id") or item.get("session_id") or item.get("sessionId") or ""),
+                    "timestamp": str(item.get("updated") or item.get("timestamp") or item.get("created") or ""),
+                    "project": str(item.get("project") or item.get("path") or item.get("cwd") or ""),
+                    "preview": str(item.get("title") or item.get("name") or item.get("preview") or item.get("display") or "")[:120],
+                    "source": "command",
+                }
+            )
+        sessions.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+        return {"tool": tool, "sessions": sessions, "total": len(items)}
+
+    def _list_command_backed_sessions(self, tool: str, limit: int) -> Dict[str, Any]:
+        if tool == "opencode":
+            result = self._run_command(["opencode", "session", "list"], timeout=30)
+            if result.status == "success" and result.output:
+                parsed = self._safe_json_loads(result.output)
+                if isinstance(parsed, list):
+                    return self._parse_command_session_items(tool, parsed, limit)
+                if isinstance(parsed, dict) and isinstance(parsed.get("sessions"), list):
+                    return self._parse_command_session_items(tool, parsed["sessions"], limit)
+            fallback = self._list_file_backed_sessions_generic(tool, "~/.local/share/opencode/sessions/", limit)
+            if fallback.get("total"):
+                return fallback
+            return self._list_file_backed_sessions_generic(tool, "~/.local/share/opencode/snapshot/", limit)
+
+        if tool == "openclaw":
+            result = self._run_command(["openclaw", "sessions"], timeout=30)
+            if result.status == "success" and result.output:
+                parsed = self._safe_json_loads(result.output)
+                if isinstance(parsed, list):
+                    return self._parse_command_session_items(tool, parsed, limit)
+                if isinstance(parsed, dict) and isinstance(parsed.get("sessions"), list):
+                    return self._parse_command_session_items(tool, parsed["sessions"], limit)
+            tool_cfg = self._tool_config(tool)
+            session_dir = tool_cfg.get("session_dir", "")
+            if session_dir:
+                fallback = self._list_file_backed_sessions_generic(tool, session_dir, limit)
+                if fallback.get("total"):
+                    return fallback
+            return {"tool": tool, "sessions": [], "total": 0, "note": "openclaw not available or no sessions found"}
+
+        raise ValueError(f"unsupported tool for list: {tool}")
+
+    def _export_file_backed_context(self, tool: str, session: Optional[str] = None) -> Dict[str, Any]:
+        session_file: Optional[Path]
+        if session:
+            session_file = self._find_session_file(tool, session)
+            if session_file is None:
+                raise ValueError(f"session not found: {session}")
+        else:
+            search_dirs = self._session_search_dirs(tool)
+            candidates = self._collect_session_files(search_dirs)
+            session_file = candidates[0] if candidates else None
         if session_file is None:
-            return asdict(SessionContext(tool=tool, summary="", source=str(session_dir)))
+            source = str(self._session_search_dirs(tool)[0]) if self._session_search_dirs(tool) else ""
+            return asdict(SessionContext(tool=tool, summary="", source=source))
         return self._parse_session_file(session_file, tool)
 
-    def _export_command_context(self, tool: str, workdir: str) -> Dict[str, Any]:
+    def _export_command_context(self, tool: str, workdir: str, session: Optional[str] = None) -> Dict[str, Any]:
         if tool == "opencode":
-            result = self._run_command(["opencode", "export", "--format", "json"], workdir=workdir)
+            if session:
+                result = self._run_command(["opencode", "export", session], workdir=workdir)
+                if result.status != "success":
+                    found = self._find_session_file(tool, session)
+                    if found is not None:
+                        return self._parse_session_file(found, tool)
+            else:
+                result = self._run_command(["opencode", "export", "--format", "json"], workdir=workdir)
         elif tool == "openclaw":
-            result = self._run_command(["openclaw", "sessions"], workdir=workdir)
+            if session:
+                result = self._run_command(["openclaw", "session", "export", session], workdir=workdir)
+                if result.status != "success":
+                    found = self._find_session_file(tool, session)
+                    if found is not None:
+                        return self._parse_session_file(found, tool)
+            else:
+                result = self._run_command(["openclaw", "sessions"], workdir=workdir)
         else:
             raise ValueError(f"unsupported command export tool: {tool}")
 
@@ -277,11 +479,18 @@ class ContextTransfer:
             )
         )
 
-    def export_context(self, tool: str, workdir: str = ".") -> Dict[str, Any]:
+    def list_sessions(self, tool: str, limit: int = 20) -> Dict[str, Any]:
         if tool in {"claude-code", "codex"}:
-            return self._export_file_backed_context(tool)
+            return self._list_file_backed_sessions(tool, limit)
         if tool in {"opencode", "openclaw"}:
-            return self._export_command_context(tool, workdir)
+            return self._list_command_backed_sessions(tool, limit)
+        raise ValueError(f"unsupported tool: {tool}")
+
+    def export_context(self, tool: str, workdir: str = ".", session: Optional[str] = None) -> Dict[str, Any]:
+        if tool in {"claude-code", "codex"}:
+            return self._export_file_backed_context(tool, session=session)
+        if tool in {"opencode", "openclaw"}:
+            return self._export_command_context(tool, workdir, session=session)
         raise ValueError(f"unsupported tool: {tool}")
 
     def compress_context(self, context: Dict[str, Any], max_tokens: int = 4000) -> str:
@@ -367,6 +576,11 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser = subparsers.add_parser("export")
     export_parser.add_argument("--tool", required=True)
     export_parser.add_argument("--workdir", default=".")
+    export_parser.add_argument("--session", default=None)
+
+    list_parser = subparsers.add_parser("list")
+    list_parser.add_argument("--tool", required=True)
+    list_parser.add_argument("--limit", type=int, default=20)
 
     compress_parser = subparsers.add_parser("compress")
     compress_parser.add_argument("--file", required=True)
@@ -390,8 +604,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         transfer = ContextTransfer(config_path=args.config_path)
+        if args.command == "list":
+            emit_json(transfer.list_sessions(args.tool, limit=args.limit))
+            return 0
         if args.command == "export":
-            emit_json(transfer.export_context(args.tool, workdir=args.workdir))
+            emit_json(transfer.export_context(args.tool, workdir=args.workdir, session=args.session))
             return 0
         if args.command == "compress":
             context_path = Path(args.file).expanduser().resolve()
