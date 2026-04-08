@@ -144,6 +144,21 @@ class ContextTransfer:
                 index[str(parsed["sessionId"])] = parsed
         return index
 
+    def _extract_text_from_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            texts: List[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content") or ""
+                    if text:
+                        texts.append(str(text))
+                elif isinstance(item, str):
+                    texts.append(item)
+            return " ".join(texts)
+        return ""
+
     def _extract_first_user_message(self, session_file: Path) -> str:
         try:
             with session_file.open("r", encoding="utf-8", errors="replace") as handle:
@@ -154,25 +169,45 @@ class ContextTransfer:
                     parsed = self._safe_json_loads(line)
                     if not isinstance(parsed, dict):
                         continue
+
+                    # Codex format: {"type": "response_item", "payload": {"role": "user", "content": [...]}}
+                    payload = parsed.get("payload")
+                    if isinstance(payload, dict) and str(payload.get("role", "")).lower() in ("user", "human"):
+                        content = payload.get("content")
+                        text = self._extract_text_from_content(content).strip()
+                        if text and not text.startswith("<"):
+                            return text[:120]
+                        continue
+
                     msg_type = str(parsed.get("type") or parsed.get("role") or "").lower()
                     if msg_type not in ("user", "human"):
                         continue
                     content = parsed.get("content") or parsed.get("text") or parsed.get("message") or parsed.get("display") or ""
-                    if isinstance(content, list):
-                        texts: List[str] = []
-                        for item in content:
-                            if isinstance(item, dict):
-                                text = item.get("text") or item.get("content") or ""
-                                if text:
-                                    texts.append(str(text))
-                            elif isinstance(item, str):
-                                texts.append(item)
-                        content = " ".join(texts)
-                    if isinstance(content, str) and content.strip():
-                        return content.strip()[:120]
+                    text = self._extract_text_from_content(content).strip()
+                    if text:
+                        return text[:120]
         except Exception:
             return ""
         return ""
+
+    @staticmethod
+    def _derive_title(preview: str) -> str:
+        """Derive a short session title from the first user message.
+
+        Mimics Claude Code's local title derivation (``ge1``): collapse
+        whitespace and truncate to 80 characters, appending '…' when
+        truncated.
+        """
+        import re
+
+        if not preview:
+            return ""
+        collapsed = re.sub(r"\s+", " ", preview).strip()
+        if not collapsed:
+            return ""
+        if len(collapsed) > 80:
+            return collapsed[:79] + "…"
+        return collapsed
 
     def _session_search_dirs(self, tool: str) -> List[Path]:
         tool_cfg = self._tool_config(tool)
@@ -339,10 +374,12 @@ class ContextTransfer:
         for path in unique[:limit]:
             stat = path.stat()
             session_id = path.stem
+            preview = self._extract_first_user_message(path)
             entry: Dict[str, Any] = {
                 "session_id": session_id,
+                "title": self._derive_title(preview),
                 "timestamp": self._isoformat_timestamp(stat.st_mtime),
-                "preview": self._extract_first_user_message(path),
+                "preview": preview,
                 "source": str(path),
                 "size_bytes": stat.st_size,
             }
@@ -353,6 +390,8 @@ class ContextTransfer:
                     entry["project"] = str(project)
                 if not entry["preview"] and history_entry.get("display"):
                     entry["preview"] = str(history_entry["display"])[:120]
+                    if not entry["title"]:
+                        entry["title"] = self._derive_title(entry["preview"])
             sessions.append(entry)
         return {"tool": tool, "sessions": sessions, "total": len(unique)}
 
@@ -361,11 +400,13 @@ class ContextTransfer:
         sessions: List[Dict[str, Any]] = []
         for path in unique[:limit]:
             stat = path.stat()
+            preview = self._extract_first_user_message(path)
             sessions.append(
                 {
                     "session_id": path.stem,
+                    "title": self._derive_title(preview),
                     "timestamp": self._isoformat_timestamp(stat.st_mtime),
-                    "preview": self._extract_first_user_message(path),
+                    "preview": preview,
                     "source": str(path),
                     "size_bytes": stat.st_size,
                 }
@@ -377,12 +418,16 @@ class ContextTransfer:
         for item in items[:limit]:
             if not isinstance(item, dict):
                 continue
+            preview = str(item.get("title") or item.get("name") or item.get("preview") or item.get("display") or "")[:120]
             sessions.append(
                 {
                     "session_id": str(item.get("id") or item.get("session_id") or item.get("sessionId") or ""),
+                    "title": self._derive_title(
+                        str(item.get("title") or item.get("name") or "")
+                    ) or self._derive_title(preview),
                     "timestamp": str(item.get("updated") or item.get("timestamp") or item.get("created") or ""),
                     "project": str(item.get("project") or item.get("path") or item.get("cwd") or ""),
-                    "preview": str(item.get("title") or item.get("name") or item.get("preview") or item.get("display") or "")[:120],
+                    "preview": preview,
                     "source": "command",
                 }
             )

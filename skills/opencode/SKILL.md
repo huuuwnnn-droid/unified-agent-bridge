@@ -63,7 +63,7 @@ python3 "${BRIDGE_HOME}/scripts/context-transfer.py" list --tool opencode
 python3 "${BRIDGE_HOME}/scripts/context-transfer.py" list --tool openclaw
 ```
 
-Output is a JSON object with `sessions` array. Each entry has: `session_id`, `timestamp`, `preview` (first user message), `source` (file path), `size_bytes`.
+Output is a JSON object with `sessions` array. Each entry has: `session_id`, `title` (derived from first user message, max 80 chars), `timestamp`, `preview` (first user message, max 120 chars), `source` (file path), `size_bytes`.
 
 ### Export a Specific Session
 

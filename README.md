@@ -120,7 +120,7 @@ Dispatch modes: `execute` (read/write), `reason` (read-only reasoning), `review`
 
 | Command | Description |
 |---------|-------------|
-| `list --tool TOOL [--limit N]` | List sessions for a tool |
+| `list --tool TOOL [--limit N]` | List sessions for a tool (includes title, timestamp, preview) |
 | `export --tool TOOL [--session ID] [--workdir DIR]` | Export session context |
 | `compress --file FILE [--max-tokens N]` | Compress exported context |
 | `import --tool TOOL --summary TEXT [--workdir DIR]` | Import context into a tool |
